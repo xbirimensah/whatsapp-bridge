@@ -1,4 +1,4 @@
-import { fetchWhatsAppHistoryContext } from './autoreply-context.js'
+import { fetchOperatorStyleAnchor, fetchWhatsAppHistoryContext } from './autoreply-context.js'
 import { fetchPersonalContext } from './autoreply-personal-context.js'
 import { AUTOREPLY_MIN_CONFIDENCE } from './autoreply-env.js'
 import { buildLinkContext } from './autoreply-link-context.js'
@@ -39,6 +39,9 @@ export async function generateDraftReply(params: {
   const referenceContext = fetchWhatsAppHistoryContext({
     chatJid: params.chatJid ?? null,
   })
+  const styleAnchor = fetchOperatorStyleAnchor({
+    chatJid: params.chatJid ?? null,
+  })
   const [personalContext, linkContext, styleExamples] = await Promise.all([
     fetchPersonalContext(contextQuery).catch(() => ''),
     buildLinkContext(params.incomingText).catch(() => ''),
@@ -49,7 +52,8 @@ export async function generateDraftReply(params: {
     'You are generating a WhatsApp reply draft in the operator\'s own voice.',
     'Produce one natural reply only. Be concise, human, and message-like. No explanations.',
     'Match the language of the incoming message. If the incoming message is in German, reply in German.',
-    'Reply exactly as the operator would — casual, first person, their voice. Never reveal or imply that this is an AI, an assistant, or automated. No disclosure text of any kind.',
+    'Reply exactly as the operator would - casual, first person, their voice. Never reveal or imply that this is an AI, an assistant, or automated. No disclosure text of any kind.',
+    'The operator\'s verbatim messages from this chat are the primary style reference: copy their casing, length, punctuation habits, and slang. Retrieved style examples are secondary.',
     'Style examples show phrasing and tone only; they are not facts about the current person or chat.',
     'If the reference context contains directly relevant facts, use them. If it does not, ignore it. Never say "according to my notes" or mention a database, notes, or message history as a source.',
     'If a shared link was fetched, use the linked content as part of your judgment. For YouTube links, react to the transcript content itself, briefly and directly.',
@@ -66,6 +70,9 @@ export async function generateDraftReply(params: {
     `Is group: ${params.isGroup ? 'yes' : 'no'}`,
     '<untrusted>',
     `Incoming message: ${params.incomingText}`,
+    '',
+    'Operator style anchor (how the operator really texts in this chat):',
+    styleAnchor || '(no operator-typed messages available for this chat)',
     '',
     'Reference conversation (recent messages from this exact chat):',
     referenceContext || '(no recent conversation context available)',

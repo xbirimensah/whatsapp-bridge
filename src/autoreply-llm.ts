@@ -27,10 +27,18 @@ import {
 const execFileAsync = promisify(execFile)
 
 async function completeViaClaudeCli(prompt: string, model: string): Promise<string> {
-  const { stdout } = await execFileAsync(AUTOREPLY_CLAUDE_BIN, ['--model', model, '-p', prompt], {
-    maxBuffer: 1024 * 1024,
-    timeout: 120000,
-  })
+  // Drafting only needs the bare model. Skipping MCP servers and settings
+  // (plugins, hooks) cuts a few seconds of CLI startup per reply given the
+  // operator's large global setup. --bare would be faster still but drops the
+  // stored login, so it cannot be used here.
+  const { stdout } = await execFileAsync(
+    AUTOREPLY_CLAUDE_BIN,
+    ['--strict-mcp-config', '--setting-sources', '', '--model', model, '-p', prompt],
+    {
+      maxBuffer: 1024 * 1024,
+      timeout: 120000,
+    },
+  )
   return stdout
 }
 
