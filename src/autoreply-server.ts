@@ -253,6 +253,18 @@ app.put('/model', async (req, reply) => {
   return { config: next, verify }
 })
 
+// A chat can appear under multiple JID forms (@lid and its @s.whatsapp.net
+// canonical). Resolving the full alias group here lets policy ACLs match a
+// blocklist/allowlist entry regardless of which form the message arrived under.
+function resolveChatJidAliases(session: string | null | undefined, chatJid: unknown): string[] {
+  if (typeof chatJid !== 'string' || chatJid.length === 0) return []
+  try {
+    return expandJidGroup(session?.trim() || AUTOREPLY_DEFAULT_SESSION, chatJid)
+  } catch {
+    return []
+  }
+}
+
 app.post('/webhook', async (req, reply) => {
   if (!authorized(req, reply)) return
   const parsed = webhookSchema.safeParse(req.body)
@@ -286,6 +298,7 @@ app.post('/webhook', async (req, reply) => {
   const policy = readPolicy()
   const decision = evaluatePolicy(policy, {
     chat_jid: message?.chat_jid,
+    chat_jid_aliases: resolveChatJidAliases(payload.session, message?.chat_jid),
     is_group: isGroup,
   })
 

@@ -1,10 +1,24 @@
 import {
   AUTOREPLY_ALLOW_GROUP_AUTO,
   AUTOREPLY_AUTO_SEND_COOLDOWN_MS,
+  AUTOREPLY_DEFAULT_SESSION,
   AUTOREPLY_MIN_CONFIDENCE,
 } from './autoreply-env.js'
 import { type DraftReply } from './autoreply-generate.js'
 import { hasDraftForMessage, hasRecentAutoSend } from './autoreply-store.js'
+import { expandJidGroup } from './db.js'
+
+// The cooldown must hold across JID forms of the same chat (@lid vs
+// @s.whatsapp.net), otherwise a chat switching forms mid-conversation would
+// dodge it.
+function cooldownJids(session: string | null | undefined, chatJid: string | null | undefined): string[] {
+  if (!chatJid) return []
+  try {
+    return expandJidGroup(session?.trim() || AUTOREPLY_DEFAULT_SESSION, chatJid)
+  } catch {
+    return [chatJid]
+  }
+}
 
 const SENSITIVE_PATTERNS = [
   /\b(invoice|payment|paid|bank|iban|wire|refund|salary|budget|price|quote|contract|legal|lawyer|tax)\b/i,
@@ -55,7 +69,7 @@ export function evaluateAutoSendSafety(params: {
   if (!params.draft.should_send) reasons.push('model marked reply as should_send=false')
   if (params.draft.needs_review) reasons.push('model marked reply as needs_review=true')
   if (params.messageId && hasDraftForMessage(params.messageId)) reasons.push('message already processed into a draft')
-  if (hasRecentAutoSend(params.chatJid, AUTOREPLY_AUTO_SEND_COOLDOWN_MS)) reasons.push('recent auto-send cooldown still active for this chat')
+  if (hasRecentAutoSend(cooldownJids(params.session, params.chatJid), AUTOREPLY_AUTO_SEND_COOLDOWN_MS)) reasons.push('recent auto-send cooldown still active for this chat')
   if (SENSITIVE_PATTERNS.some((pattern) => pattern.test(text))) reasons.push('message matches a sensitive-topic safety pattern')
 
   return { ok: reasons.length === 0, reasons }

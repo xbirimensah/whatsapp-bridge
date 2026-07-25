@@ -46,6 +46,11 @@ export interface AutoReplyAuditEntry {
 
 export interface DecisionContext {
   chat_jid?: string | null
+  // Every known JID alias of the chat (e.g. the @lid form plus its
+  // @s.whatsapp.net canonical). ACL matching considers all of them, so a
+  // blocklist/allowlist entry hits no matter which form a message arrives
+  // under. The caller resolves these via expandJidGroup.
+  chat_jid_aliases?: string[]
   is_group?: boolean | null
   now?: Date
 }
@@ -91,10 +96,18 @@ function aclKey(jid: string | null | undefined): string | null {
   return local || null
 }
 
-function listMatches(list: string[], jid: string | null | undefined): boolean {
-  const key = aclKey(jid)
-  if (!key) return false
-  return list.some((entry) => aclKey(entry) === key)
+function listMatches(list: string[], jids: Array<string | null | undefined>): boolean {
+  const keys = new Set(jids.map(aclKey).filter((key): key is string => key !== null))
+  if (keys.size === 0) return false
+  return list.some((entry) => {
+    const key = aclKey(entry)
+    return key !== null && keys.has(key)
+  })
+}
+
+function chatCandidates(context: Pick<DecisionContext, 'chat_jid' | 'chat_jid_aliases'>): string[] {
+  const candidates = [context.chat_jid, ...(context.chat_jid_aliases ?? [])]
+  return candidates.filter((jid): jid is string => typeof jid === 'string' && jid.length > 0)
 }
 
 function ensureDataDir(): void {
@@ -162,13 +175,17 @@ export function hasDraftForMessage(messageId: string | null | undefined): boolea
   return readNdjson(DRAFTS_PATH, 500).some((entry) => entry.message_id === messageId)
 }
 
-export function hasRecentAutoSend(chatJid: string | null | undefined, windowMs: number): boolean {
-  if (!chatJid || windowMs <= 0) return false
+export function hasRecentAutoSend(chatJid: string | string[] | null | undefined, windowMs: number): boolean {
+  const chatJids = (Array.isArray(chatJid) ? chatJid : [chatJid]).filter(
+    (jid): jid is string => typeof jid === 'string' && jid.length > 0,
+  )
+  if (chatJids.length === 0 || windowMs <= 0) return false
+  const jidSet = new Set(chatJids)
   const cutoff = Date.now() - windowMs
   return readNdjson(AUDIT_PATH, 500).some((entry) => {
     if (entry.event !== 'auto_sent') return false
     const data = entry.data as Record<string, unknown> | undefined
-    if (!data || data.chat_jid !== chatJid) return false
+    if (!data || typeof data.chat_jid !== 'string' || !jidSet.has(data.chat_jid)) return false
     const ts = typeof data.ts === 'number' ? data.ts : Date.parse(String(entry.ts ?? ''))
     return Number.isFinite(ts) && ts >= cutoff
   })
@@ -211,14 +228,14 @@ function isWithinHours(activeHours: ActiveHours | null, now: Date): boolean {
   return current >= start || current <= end
 }
 
-function scopeAllows(policy: AutoReplyPolicy, chatJid: string | null | undefined, isGroup: boolean | null | undefined): boolean {
+function scopeAllows(policy: AutoReplyPolicy, chatJids: string[], isGroup: boolean | null | undefined): boolean {
   if (policy.scope === 'all') return true
-  if (!chatJid) return false
-  if (policy.scope === 'contacts') return !isGroup && listMatches(policy.contacts, chatJid)
-  if (policy.scope === 'groups') return !!isGroup && listMatches(policy.groups, chatJid)
+  if (chatJids.length === 0) return false
+  if (policy.scope === 'contacts') return !isGroup && listMatches(policy.contacts, chatJids)
+  if (policy.scope === 'groups') return !!isGroup && listMatches(policy.groups, chatJids)
   if (policy.scope === 'mixed') {
-    if (isGroup) return listMatches(policy.groups, chatJid)
-    return listMatches(policy.contacts, chatJid)
+    if (isGroup) return listMatches(policy.groups, chatJids)
+    return listMatches(policy.contacts, chatJids)
   }
   return false
 }
@@ -229,10 +246,11 @@ export function evaluatePolicy(policy: AutoReplyPolicy, context: DecisionContext
   reason: string
 } {
   const now = context.now ?? new Date()
+  const chatJids = chatCandidates(context)
   if (policy.mode === 'off') return { active: false, mode: 'off', reason: 'policy mode is off' }
   // Blacklist is absolute: a blocklisted chat never gets an autoreply, whatever
   // the mode, scope, or time window says.
-  if (listMatches(policy.blocklist, context.chat_jid)) {
+  if (listMatches(policy.blocklist, chatJids)) {
     return { active: false, mode: policy.mode, reason: 'chat is blocklisted' }
   }
   if (!isWithinUntil(policy.active_until, now)) {
@@ -241,7 +259,7 @@ export function evaluatePolicy(policy: AutoReplyPolicy, context: DecisionContext
   if (!isWithinHours(policy.active_hours, now)) {
     return { active: false, mode: policy.mode, reason: 'outside active_hours window' }
   }
-  if (!scopeAllows(policy, context.chat_jid, context.is_group)) {
+  if (!scopeAllows(policy, chatJids, context.is_group)) {
     return { active: false, mode: policy.mode, reason: 'chat is outside configured scope' }
   }
   return { active: true, mode: policy.mode, reason: 'policy active' }

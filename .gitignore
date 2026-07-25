@@ -9,3 +9,4 @@ logs/
 .DS_Store
 auth-archive/
 docs/plans/
+__pycache__/
