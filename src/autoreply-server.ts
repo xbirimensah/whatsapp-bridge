@@ -8,6 +8,8 @@ import { z } from 'zod'
 import { AUTOREPLY_DEFAULT_SESSION, AUTOREPLY_HOST, AUTOREPLY_PORT, AUTOREPLY_TOKEN } from './autoreply-env.js'
 import { expandJidGroup } from './db.js'
 import { generateDraftReply } from './autoreply-generate.js'
+import { attemptEscalation } from './autoreply-escalation.js'
+import { resolveChatLanguage } from './autoreply-language.js'
 import { isNotifyWhatsAppChat, sendDraftNotification, sendInboundNotification } from './autoreply-notify.js'
 import {
   PROVIDERS,
@@ -22,6 +24,7 @@ import {
   appendDraft,
   evaluatePolicy,
   getDefaultPolicy,
+  hasAutoSentForMessage,
   readPolicy,
   writePolicy,
   type AutoReplyPolicy,
@@ -398,11 +401,24 @@ app.post('/webhook', async (req, reply) => {
   }
 
   if (decision.active && message?.direction !== 'out' && incomingText) {
+    // Webhooks may be retried after a transient bridge failure. A draft is not
+    // delivery: only suppress the event once an auto-send was persisted.
+    if (decision.mode === 'auto' && hasAutoSentForMessage(message?.id ?? null)) {
+      appendAudit('safety_blocked', {
+        session: payload.session ?? null,
+        message_id: message?.id ?? null,
+        chat_jid: message?.chat_jid ?? null,
+        reason: 'message already auto-sent',
+      })
+      return { ok: true, policy_mode: policy.mode, decision, skipped: 'already_auto_sent' }
+    }
+
     const draft = await generateDraftReply({
       incomingText,
       contactName: message?.from_display_name ?? null,
       isGroup,
       chatJid: message?.chat_jid ?? null,
+      session: payload.session ?? null,
     }).catch((error: unknown) => {
       appendAudit('safety_blocked', {
         session: payload.session ?? null,
@@ -415,6 +431,10 @@ app.post('/webhook', async (req, reply) => {
     })
 
     if (draft) {
+      // Resolve once again at the decision boundary. `generateDraftReply`
+      // applies the same guard for review metadata, but this boundary is what
+      // authorizes a real text send and must remain safe if generation changes.
+      const chatLanguage = resolveChatLanguage(incomingText, [])
       const preparedDraft = {
         ...draft,
         reply: presentReply(draft.reply, incomingText),
@@ -427,6 +447,7 @@ app.post('/webhook', async (req, reply) => {
             incomingText,
             draft: preparedDraft,
             isGroup,
+            chatLanguage,
           })
         : null
 
@@ -515,6 +536,20 @@ app.post('/webhook', async (req, reply) => {
             needs_review: true,
             reasons: [...preparedDraft.reasons, ...(autoSafety?.reasons ?? [])],
           }).catch(() => false)
+          await attemptEscalation({
+            session: payload.session ?? null,
+            chat_jid: message?.chat_jid ?? null,
+            message_id: message?.id ?? null,
+            reason: 'auto_send_safety_blocked',
+            payload: {
+              session: payload.session ?? null,
+              chat_jid: message?.chat_jid ?? null,
+              contact_label: contactLabel,
+              incoming_text: incomingText,
+              draft_reply: preparedDraft.reply,
+              reasons: [...preparedDraft.reasons, ...(autoSafety?.reasons ?? [])],
+            },
+          })
         }
       }
     }

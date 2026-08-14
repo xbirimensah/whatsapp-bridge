@@ -38,7 +38,8 @@ import {
 import { dispatchInbound } from './webhook.js'
 import { transcribeAudio, TranscribeError } from './transcribe.js'
 import { OPENAI_API_KEY, FORCE_HISTORY_SYNC_ON_RESTORE } from './env.js'
-import { buildContactPayload, buildLocationPayload, buildPollPayload, buildVoicePayload, parseMessageId } from './outbound.js'
+import { buildContactPayload, buildLocationPayload, buildPollPayload, buildReactionPayload, buildVoicePayload, parseMessageId } from './outbound.js'
+import { recordOperatorReply } from './autoreply-store.js'
 
 export function scanRegisteredSessions(authDir = './auth'): string[] {
   if (!existsSync(authDir)) return []
@@ -334,7 +335,12 @@ class WaManager {
 
       if (connection === 'open') {
         log.info({ session: name, jid: sock.user?.id }, 'connected')
-        void this.refreshGroupMetadata(name, sock)
+        // Do not immediately fan out 188 group-metadata requests while a newly
+        // restored Web session is still settling. That churn can cause WhatsApp
+        // to close the transport before an outbound USync/send completes.
+        setTimeout(() => {
+          if (this.sessions.get(name) === sock) void this.refreshGroupMetadata(name, sock)
+        }, 30_000)
       }
 
       if (connection === 'close') {
@@ -388,6 +394,19 @@ class WaManager {
 
         const result = insertMessage(row)
         if (result.changes > 0) {
+          if (row.direction === 'out' && row.sent_by === 'user' && row.body?.trim()) {
+            try {
+              recordOperatorReply({
+                message_id: row.id,
+                session: row.session,
+                chat_jid: row.chat_jid,
+                body: row.body,
+                ts: row.ts,
+              })
+            } catch (error) {
+              log.warn({ err: (error as Error).message, session: name }, 'operator reply signal persist failed')
+            }
+          }
           log.info(
             // Message body intentionally NOT logged — bodies are sensitive and the
             // log file is plaintext on disk. Length only.
@@ -901,9 +920,7 @@ class WaManager {
     const stanzaId = targetMessageId.startsWith(`${name}:`)
       ? targetMessageId.slice(name.length + 1)
       : targetMessageId
-    await sock.sendMessage(targetChatJid, {
-      react: { text: emoji, key: { remoteJid: targetChatJid, id: stanzaId, fromMe: false } },
-    })
+    await sock.sendMessage(targetChatJid, buildReactionPayload({ chatJid: targetChatJid, messageId: stanzaId, emoji }))
     upsertReaction({
       session: name,
       message_id: `${name}:${stanzaId}`,

@@ -1,7 +1,8 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { AUTOREPLY_DATA_DIR } from './autoreply-env.js'
+import { detectTextLanguage, type ChatLanguage } from './autoreply-language.js'
 
 export type AutoReplyMode = 'draft' | 'auto' | 'off'
 export type AutoReplyScope = 'all' | 'contacts' | 'groups' | 'mixed'
@@ -41,6 +42,11 @@ export interface AutoReplyAuditEntry {
     | 'model_read'
     | 'model_updated'
     | 'model_test'
+    | 'escalation_skipped'
+    | 'escalation_queued'
+    | 'escalation_delivered'
+    | 'escalation_failed'
+    | 'feedback_recorded'
   data: Record<string, unknown>
 }
 
@@ -58,6 +64,85 @@ export interface DecisionContext {
 const POLICY_PATH = join(AUTOREPLY_DATA_DIR, 'policy.json')
 const AUDIT_PATH = join(AUTOREPLY_DATA_DIR, 'audit.ndjson')
 const DRAFTS_PATH = join(AUTOREPLY_DATA_DIR, 'drafts.ndjson')
+const CLOSED_LOOP_PATH = join(AUTOREPLY_DATA_DIR, 'operator-replies.json')
+const CLOSED_LOOP_REPLIES_PER_CHAT = 40
+const CLOSED_LOOP_MAX_CHATS = 250
+
+export interface OperatorReplySignal {
+  message_id: string
+  session: string
+  chat_jid: string
+  body: string
+  language: ChatLanguage
+  ts: number
+}
+
+type ClosedLoopStore = Record<string, OperatorReplySignal[]>
+
+function closedLoopKey(session: string, chatJid: string): string {
+  return `${session}\u0000${chatJid}`
+}
+
+function readClosedLoopStore(): ClosedLoopStore {
+  if (!existsSync(CLOSED_LOOP_PATH)) return {}
+  try {
+    const parsed = JSON.parse(readFileSync(CLOSED_LOOP_PATH, 'utf8')) as ClosedLoopStore
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+type OperatorReplyInput = Omit<OperatorReplySignal, 'language'> & { language?: ChatLanguage }
+
+export function recordOperatorReplies(inputs: OperatorReplyInput[]): void {
+  const signals = inputs.flatMap((params): OperatorReplySignal[] => {
+    const body = params.body.replace(/\s+/g, ' ').trim().slice(0, 500)
+    if (!body || !params.chat_jid || !params.message_id) return []
+    return [{
+      ...params,
+      body,
+      language: params.language ?? detectTextLanguage(body),
+    }]
+  })
+  if (signals.length === 0) return
+  ensureDataDir()
+  const store = readClosedLoopStore()
+  for (const signal of signals) {
+    const key = closedLoopKey(signal.session, signal.chat_jid)
+    const replies = (store[key] ?? []).filter((reply) => reply.message_id !== signal.message_id)
+    store[key] = [...replies, signal]
+      .sort((a, b) => a.ts - b.ts)
+      .slice(-CLOSED_LOOP_REPLIES_PER_CHAT)
+  }
+
+  const bounded = Object.fromEntries(
+    Object.entries(store)
+      .sort(([, a], [, b]) => (b.at(-1)?.ts ?? 0) - (a.at(-1)?.ts ?? 0))
+      .slice(0, CLOSED_LOOP_MAX_CHATS),
+  )
+  const tempPath = `${CLOSED_LOOP_PATH}.${process.pid}.tmp`
+  writeFileSync(tempPath, JSON.stringify(bounded, null, 2), { mode: 0o600 })
+  renameSync(tempPath, CLOSED_LOOP_PATH)
+}
+
+export function recordOperatorReply(params: OperatorReplyInput): void {
+  recordOperatorReplies([params])
+}
+
+export function readOperatorReplies(params: {
+  session: string
+  chatJids: string[]
+  limit?: number
+}): OperatorReplySignal[] {
+  const store = readClosedLoopStore()
+  const limit = Math.max(0, Math.min(params.limit ?? CLOSED_LOOP_REPLIES_PER_CHAT, CLOSED_LOOP_REPLIES_PER_CHAT))
+  return params.chatJids
+    .flatMap((jid) => store[closedLoopKey(params.session, jid)] ?? [])
+    .filter((reply, index, replies) => replies.findIndex((other) => other.message_id === reply.message_id) === index)
+    .sort((a, b) => a.ts - b.ts)
+    .slice(-limit)
+}
 
 function readNdjson(path: string, limit = 500): Array<Record<string, unknown>> {
   if (!existsSync(path)) return []
@@ -173,6 +258,15 @@ export function appendDraft(data: Record<string, unknown>): void {
 export function hasDraftForMessage(messageId: string | null | undefined): boolean {
   if (!messageId) return false
   return readNdjson(DRAFTS_PATH, 500).some((entry) => entry.message_id === messageId)
+}
+
+export function hasAutoSentForMessage(messageId: string | null | undefined): boolean {
+  if (!messageId) return false
+  return readNdjson(AUDIT_PATH, 500).some((entry) => {
+    if (entry.event !== 'auto_sent') return false
+    const data = entry.data as Record<string, unknown> | undefined
+    return data?.inbound_message_id === messageId
+  })
 }
 
 export function hasRecentAutoSend(chatJid: string | string[] | null | undefined, windowMs: number): boolean {
