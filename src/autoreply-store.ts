@@ -35,6 +35,9 @@ export interface AutoReplyAuditEntry {
   ts: string
   event:
     | 'webhook_received'
+    | 'task_detected'
+    | 'task_started'
+    | 'task_finished'
     | 'webhook_enrichment_failed'
     | 'policy_read'
     | 'policy_updated'

@@ -7,6 +7,8 @@ import { z } from 'zod'
 
 import { AUTOREPLY_DEFAULT_SESSION, AUTOREPLY_HOST, AUTOREPLY_PORT, AUTOREPLY_TOKEN } from './autoreply-env.js'
 import { expandJidGroup } from './db.js'
+import { isSelfChat, readTasksConfig } from './tasks-config.js'
+import { handleTaskSignals, type TaskSignalInput } from './tasks-handler.js'
 import { generateDraftReply } from './autoreply-generate.js'
 import { attemptEscalation } from './autoreply-escalation.js'
 import { resolveChatLanguage } from './autoreply-language.js'
@@ -356,6 +358,30 @@ app.post('/webhook', async (req, reply) => {
     ).catch(() => null)
     || message?.chat_jid
     || 'unknown'
+
+  const tasksConfig = readTasksConfig()
+  if (tasksConfig.enabled && !isTestEvent && typeof message?.chat_jid === 'string') {
+    const taskChatJids = Array.from(new Set([message.chat_jid, ...resolveChatJidAliases(payload.session, message.chat_jid)]))
+    const taskInput: TaskSignalInput = {
+      session: payload.session ?? AUTOREPLY_DEFAULT_SESSION,
+      chatJid: message.chat_jid,
+      chatJids: taskChatJids,
+      messageId: message.id ?? null,
+      direction: message.direction ?? null,
+      sentBy: typeof message.sent_by === 'string' ? message.sent_by : null,
+      type: enrichedMessage?.type ?? message.type ?? null,
+      text: incomingText,
+      contactLabel,
+      isGroup,
+      taggedForOperator: isGroup && isExplicitlyTaggedForOperator(payload.session ?? AUTOREPLY_DEFAULT_SESSION, message),
+    }
+    // Detection runs in the background so drafts/auto-replies are not delayed.
+    void handleTaskSignals(taskInput)
+    // The operator's own chat only carries orders and approvals.
+    if (isSelfChat(tasksConfig, taskChatJids)) {
+      return { ok: true, skipped: 'self_chat_task' }
+    }
+  }
 
   if (!isTestEvent && message?.direction !== 'out' && message?.chat_jid !== 'status@broadcast') {
     await sendInboundNotification({

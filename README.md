@@ -236,6 +236,8 @@ npm run autoreply:link -- <url> # preview the link context a message would build
 
 Every step is appended to `data/autoreply/audit.ndjson`; every draft to `data/autoreply/drafts.ndjson`.
 
+The sidecar can also turn messages into tasks for a coding agent, with approval in your own chat. It is off by default; see [docs/tasks.md](docs/tasks.md).
+
 ### How the confidence threshold works
 
 The model self-scores each draft with a `confidence` value between 0 and 1: how sure it is that the reply is correct, complete, and safe to send without a human looking at it. `AUTOREPLY_MIN_CONFIDENCE` (default **0.78**) is the cutoff:
