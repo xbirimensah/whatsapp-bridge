@@ -177,6 +177,18 @@ const SENDERS: Record<NotifyChannel, (payload: Record<string, unknown>) => Promi
 // Legacy fallback order, used only when AUTOREPLY_NOTIFY_CHANNEL is not set.
 const AUTO_ORDER: NotifyChannel[] = ['webhook', 'telegram', 'slack', 'whatsapp']
 
+export function hasConfiguredNotifyTransport(): boolean {
+  const configured = (channel: NotifyChannel): boolean => {
+    if (channel === 'webhook') return Boolean(AUTOREPLY_NOTIFY_WEBHOOK_URL)
+    if (channel === 'telegram') return Boolean(AUTOREPLY_TELEGRAM_BOT_TOKEN && AUTOREPLY_TELEGRAM_CHAT_ID)
+    if (channel === 'slack') return Boolean(AUTOREPLY_SLACK_WEBHOOK_URL || (AUTOREPLY_SLACK_BOT_TOKEN && AUTOREPLY_SLACK_CHANNEL))
+    return Boolean(AUTOREPLY_NOTIFY_WA_TO)
+  }
+  return AUTOREPLY_NOTIFY_CHANNEL
+    ? configured(AUTOREPLY_NOTIFY_CHANNEL)
+    : AUTO_ORDER.some(configured)
+}
+
 export function isNotifyWhatsAppChat(chatJid: string | null | undefined): boolean {
   if (!AUTOREPLY_NOTIFY_WA_TO || !chatJid) return false
   const wantsWhatsApp = AUTOREPLY_NOTIFY_CHANNEL === 'whatsapp' || AUTOREPLY_NOTIFY_CHANNEL == null
@@ -202,5 +214,11 @@ export async function sendDraftNotification(payload: Record<string, unknown>): P
 }
 
 export async function sendInboundNotification(payload: Record<string, unknown>): Promise<boolean> {
+  return dispatchNotification(payload)
+}
+
+// Escalations deliberately reuse the already configured private notification
+// transport. They never introduce another credential path or a public sink.
+export async function sendEscalationNotification(payload: Record<string, unknown>): Promise<boolean> {
   return dispatchNotification(payload)
 }

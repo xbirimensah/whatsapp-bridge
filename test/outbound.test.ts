@@ -5,6 +5,7 @@ import {
   buildContactPayload,
   buildLocationPayload,
   buildPollPayload,
+  buildReactionPayload,
   buildVoicePayload,
   parseMessageId,
 } from '../src/outbound.js'
@@ -49,4 +50,12 @@ test('marks an audio payload as a voice note', () => {
 test('normalizes bridge-local message IDs to native WhatsApp IDs', () => {
   assert.equal(parseMessageId('main:ABC', 'main'), 'ABC')
   assert.equal(parseMessageId('ABC', 'main'), 'ABC')
+})
+
+test('builds reactions only as native operations bound to a chat and message target', () => {
+  assert.deepEqual(buildReactionPayload({ chatJid: '12025550100@s.whatsapp.net', messageId: 'ABC', emoji: '👍' }), {
+    react: { text: '👍', key: { remoteJid: '12025550100@s.whatsapp.net', id: 'ABC', fromMe: false } },
+  })
+  assert.throws(() => buildReactionPayload({ chatJid: '', messageId: 'ABC', emoji: '👍' }), /chat_jid/i)
+  assert.throws(() => buildReactionPayload({ chatJid: '12025550100@s.whatsapp.net', messageId: '', emoji: '👍' }), /message_id/i)
 })

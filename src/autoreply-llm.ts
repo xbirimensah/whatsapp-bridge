@@ -27,13 +27,12 @@ import {
 const execFileAsync = promisify(execFile)
 
 async function completeViaClaudeCli(prompt: string, model: string): Promise<string> {
-  // Drafting only needs the bare model. Skipping MCP servers and settings
-  // (plugins, hooks) cuts a few seconds of CLI startup per reply given the
-  // operator's large global setup. --bare would be faster still but drops the
-  // stored login, so it cannot be used here.
+  // Use the authenticated CLI normally. Passing an empty --setting-sources
+  // value makes Claude wait for stdin, which prevents the sidecar from
+  // generating a reply.
   const { stdout } = await execFileAsync(
     AUTOREPLY_CLAUDE_BIN,
-    ['--strict-mcp-config', '--setting-sources', '', '--model', model, '-p', prompt],
+    ['--model', model, '-p', prompt],
     {
       maxBuffer: 1024 * 1024,
       timeout: 120000,
@@ -93,5 +92,18 @@ export async function completeDraftPrompt(prompt: string): Promise<string> {
   if (config.provider === 'anthropic') return completeViaAnthropic(prompt, config)
   if (config.provider === 'openai') return completeViaOpenAiCompatible(prompt, config)
   if (config.provider === 'codex-cli') return completeViaCodexCli(prompt, config.model)
-  return completeViaClaudeCli(prompt, config.model ?? AUTOREPLY_MODEL)
+
+  try {
+    return await completeViaClaudeCli(prompt, config.model ?? AUTOREPLY_MODEL)
+  } catch (claudeError) {
+    // Claude CLI auth and Codex CLI auth are independent. Keep WhatsApp auto-reply
+    // available when a Claude OAuth session expires or the Claude binary fails.
+    try {
+      return await completeViaCodexCli(prompt, null)
+    } catch (codexError) {
+      throw new Error(
+        `[autoreply/llm] claude-cli failed and codex-cli fallback failed: ${String(claudeError)} | ${String(codexError)}`,
+      )
+    }
+  }
 }

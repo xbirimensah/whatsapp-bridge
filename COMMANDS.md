@@ -24,6 +24,8 @@ All run from `~/apps/whatsapp-bridge`. There is no build step.
 |---|---|
 | `npm install` | One-time dependency install. |
 | `npm run start` | Boot the daemon: restore the paired session, start API on `127.0.0.1:8080`. |
+| `npm run bridge:control -- on` | Turn the WhatsApp transport on. This is the default state after a fresh install or reboot. |
+| `npm run bridge:control -- off` | Turn the WhatsApp transport off while leaving the authenticated local API available to turn it back on. |
 | `npm run dev` | Same as start, with `tsx --watch` (auto-reload on `src/` edits). |
 | `npm run pair -- main <digits>` | Pair a number. Prints an 8-char code; approve on the phone via Linked Devices. Digits only, no `+`. Blocked if any session already exists. |
 | `npm run history` | CLI dump of recent messages for the current session. |
@@ -73,7 +75,7 @@ Callable from any Claude Code conversation while the daemon is running. Full con
 **Send**
 - `send_message` — text. Params: `session`, `to`, `text`.
 - `send_media` — image / audio / document. Params: `session`, `to`, `path`, `caption?`.
-- `send_reaction` — emoji react to a message.
+- `send_reaction` — native emoji reaction, requiring both `chat_jid` and the target `message_id`; it is never an emoji-only text send.
 - `send_typing` — show "typing…" indicator.
 
 **Groups**

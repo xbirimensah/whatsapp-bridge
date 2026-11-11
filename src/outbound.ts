@@ -16,6 +16,12 @@ export type PollInput = {
   selectableCount?: number
 }
 
+export type ReactionInput = {
+  chatJid: string
+  messageId: string
+  emoji: string
+}
+
 const MAX_LOCATION_TEXT = 1024
 const MAX_POLL_NAME = 255
 const MAX_POLL_OPTION = 100
@@ -33,6 +39,17 @@ export function parseMessageId(id: string, session: string): string {
   const parsed = id.startsWith(prefix) ? id.slice(prefix.length) : id
   if (!parsed) throw new Error('message_id is required')
   return parsed
+}
+
+// Reactions are native WhatsApp operations, not tiny text messages. Keeping
+// the target fields together makes the invariant explicit at the lowest
+// shared layer: an emoji is never enough to construct a reaction payload.
+export function buildReactionPayload(input: ReactionInput) {
+  const remoteJid = input.chatJid.trim()
+  const id = input.messageId.trim()
+  if (!remoteJid || !id) throw new Error('reaction requires chat_jid and message_id')
+  if (typeof input.emoji !== 'string') throw new Error('reaction emoji must be a string')
+  return { react: { text: input.emoji, key: { remoteJid, id, fromMe: false } } }
 }
 
 export function buildLocationPayload(input: LocationInput) {

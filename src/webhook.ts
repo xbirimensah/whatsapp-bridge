@@ -140,6 +140,8 @@ export function buildPayload(message: MessageInput) {
       from_phone: phoneFor(message.session, message.from_jid),
       chat_phone: phoneFor(message.session, message.chat_jid),
       mention_jids: extractMentionJids(message.raw_json),
+      sent_by: message.sent_by,
+      quoted_id: message.quoted_id,
     },
   }
 }

@@ -27,6 +27,7 @@ import {
 import { dispatchTest } from './webhook.js'
 import { WEBHOOK_URL } from './env.js'
 import { getUpdates } from './updates.js'
+import { bridgeControl } from './bridge-control.js'
 
 const log = pino({ level: 'info' }).child({ mod: 'api' })
 
@@ -179,7 +180,7 @@ async function fetchToBuffer(url: string): Promise<{ buf: Buffer; mime: string |
   return { buf: Buffer.from(arr), mime }
 }
 
-export async function startApi(): Promise<void> {
+export async function startApi(options: { onBridgeControlChange?: (enabled: boolean) => Promise<void> } = {}): Promise<void> {
   const app = Fastify({ logger: false, bodyLimit: 50 * 1024 * 1024 })
 
   const tokenBuf = Buffer.from(API_TOKEN, 'utf8')
@@ -265,9 +266,26 @@ export async function startApi(): Promise<void> {
   app.get('/v1/health', async () => ({
     ok: true,
     sessions: wa.list(),
+    bridge_enabled: bridgeControl.get().enabled,
     ts: Date.now(),
     updates: getUpdates(),
   }))
+
+  app.get('/v1/bridge/control', async () => bridgeControl.get())
+
+  app.put<{ Body: { enabled?: unknown } }>('/v1/bridge/control', async (req, reply) => {
+    if (typeof req.body?.enabled !== 'boolean') {
+      reply.code(400).send({ error: 'enabled boolean required' })
+      return
+    }
+    const state = bridgeControl.set(req.body.enabled)
+    try {
+      await options.onBridgeControlChange?.(state.enabled)
+      return state
+    } catch (err) {
+      internalError(reply, err, 'bridge control')
+    }
+  })
 
   // ---- conversations / messages ----
   app.get<{ Querystring: { session?: string; limit?: string } }>(

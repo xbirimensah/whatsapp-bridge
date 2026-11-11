@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 
 import { db, setMessageTranscript } from './db.js'
 import { transcribeAudio } from './transcribe.js'
-import { OPENAI_API_KEY } from './env.js'
+import { TRANSCRIBE_ENABLED } from './env.js'
 
 interface Row {
   id: string
@@ -22,8 +22,8 @@ function parseArgs(): { limit: number; session: string | null } {
 }
 
 async function main() {
-  if (!OPENAI_API_KEY) {
-    console.error('[backlog] OPENAI_API_KEY not set')
+  if (!TRANSCRIBE_ENABLED) {
+    console.error('[backlog] no transcription backend (set TRANSCRIBE_LOCAL_PYTHON or OPENAI_API_KEY)')
     process.exit(1)
   }
   const { limit, session } = parseArgs()

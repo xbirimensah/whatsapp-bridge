@@ -18,7 +18,7 @@ import {
   verifyModel,
   writeModelConfig,
 } from './autoreply-model.js'
-import { evaluateAutoSendSafety, isTrivialAcknowledgement } from './autoreply-safety.js'
+import { evaluateAutoSendSafety } from './autoreply-safety.js'
 import {
   appendAudit,
   appendDraft,
@@ -78,6 +78,7 @@ const updatePolicySchema = z.object({
   // Optional so a PUT that omits it PRESERVES the existing blocklist rather
   // than wiping it (e.g. `npm run autoreply:off`). Pass [] to clear explicitly.
   blocklist: z.array(z.string()).optional(),
+  draft_only: z.array(z.string()).optional(),
   active_until: z.string().datetime({ offset: true }).nullable().optional(),
   active_hours: activeHoursSchema.nullable().optional(),
   notes: z.string().nullable().optional(),
@@ -193,6 +194,7 @@ app.put('/policy', async (req, reply) => {
     contacts: parsed.data.contacts,
     groups: parsed.data.groups,
     blocklist: parsed.data.blocklist ?? previous.blocklist,
+    draft_only: parsed.data.draft_only ?? previous.draft_only,
     active_until: parsed.data.active_until ?? null,
     active_hours: parsed.data.active_hours ? {
       start: parsed.data.active_hours.start,
@@ -379,24 +381,6 @@ app.post('/webhook', async (req, reply) => {
       policy_mode: policy.mode,
       decision,
       skipped: 'group_not_tagged',
-    }
-  }
-
-  // Do not draft or auto-send another acknowledgement after a conversation
-  // has already naturally closed. Inbound notifications still reach Obiri, so
-  // he can answer personally when he wants to.
-  if (decision.active && message?.direction !== 'out' && isTrivialAcknowledgement(incomingText)) {
-    appendAudit('safety_blocked', {
-      session: payload.session ?? null,
-      message_id: message?.id ?? null,
-      chat_jid: message?.chat_jid ?? null,
-      reason: 'trivial acknowledgement left for Obiri',
-    })
-    return {
-      ok: true,
-      policy_mode: policy.mode,
-      decision,
-      skipped: 'trivial_acknowledgement',
     }
   }
 

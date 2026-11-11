@@ -1,7 +1,16 @@
+import { execFile } from 'node:child_process'
 import { readFile, stat } from 'node:fs/promises'
-import { extname } from 'node:path'
+import { dirname, extname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 
-import { OPENAI_API_KEY } from './env.js'
+import { OPENAI_API_KEY, TRANSCRIBE_LOCAL_MODEL, TRANSCRIBE_LOCAL_PYTHON } from './env.js'
+
+const execFileAsync = promisify(execFile)
+const LOCAL_SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'transcribe_local.py')
+const LOCAL_TIMEOUT_MS = 5 * 60 * 1000
+// launchd starts us without Homebrew on PATH; mlx-whisper shells out to ffmpeg.
+const LOCAL_PATH = ['/opt/homebrew/bin', '/usr/local/bin', process.env.PATH ?? '/usr/bin:/bin'].join(':')
 
 const ENDPOINT = 'https://api.openai.com/v1/audio/transcriptions'
 const MODEL = 'whisper-1'
@@ -9,7 +18,38 @@ const MAX_BYTES = 25 * 1024 * 1024 // OpenAI rejects > 25 MB anyway
 
 export class TranscribeError extends Error {}
 
+async function transcribeLocal(filePath: string): Promise<string> {
+  if (!TRANSCRIBE_LOCAL_PYTHON) throw new TranscribeError('TRANSCRIBE_LOCAL_PYTHON not set')
+  const args = [LOCAL_SCRIPT, filePath, TRANSCRIBE_LOCAL_MODEL ?? '']
+  try {
+    const { stdout } = await execFileAsync(TRANSCRIBE_LOCAL_PYTHON, args, {
+      timeout: LOCAL_TIMEOUT_MS,
+      maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, PATH: LOCAL_PATH },
+    })
+    return stdout.trim()
+  } catch (err) {
+    const e = err as Error & { stderr?: string }
+    throw new TranscribeError(`local: ${(e.stderr || e.message).slice(-300)}`)
+  }
+}
+
+/** Local mlx-whisper first (free, audio stays on the machine), OpenAI as fallback. */
 export async function transcribeAudio(
+  filePath: string,
+  opts: { mime?: string | null; language?: string } = {},
+): Promise<string> {
+  if (TRANSCRIBE_LOCAL_PYTHON) {
+    try {
+      return await transcribeLocal(filePath)
+    } catch (err) {
+      if (!OPENAI_API_KEY) throw err
+    }
+  }
+  return transcribeOpenAI(filePath, opts)
+}
+
+async function transcribeOpenAI(
   filePath: string,
   opts: { mime?: string | null; language?: string } = {},
 ): Promise<string> {

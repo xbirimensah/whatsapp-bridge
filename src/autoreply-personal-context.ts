@@ -8,6 +8,7 @@ import {
   AUTOREPLY_PERSONAL_CONTEXT_MAX_CHARS,
   AUTOREPLY_SECOND_BRAIN_ROOT,
 } from './autoreply-env.js'
+import { forwardScriptStderr, stderrOf } from './autoreply-script-stderr.js'
 
 const execFileAsync = promisify(execFile)
 const PERSONAL_CONTEXT_SCRIPT = join(process.cwd(), 'scripts', 'wa_personal_context.py')
@@ -27,15 +28,21 @@ export async function fetchPersonalContext(query: string): Promise<string> {
   if (!Number.isFinite(AUTOREPLY_PERSONAL_CONTEXT_LIMIT) || AUTOREPLY_PERSONAL_CONTEXT_LIMIT <= 0) return ''
   if (!Number.isFinite(AUTOREPLY_PERSONAL_CONTEXT_MAX_CHARS) || AUTOREPLY_PERSONAL_CONTEXT_MAX_CHARS <= 0) return ''
 
-  const { stdout } = await execFileAsync(
-    pythonBin(),
-    [
-      PERSONAL_CONTEXT_SCRIPT,
-      '--query', query.slice(0, 1200),
-      '--limit', String(Math.min(Math.floor(AUTOREPLY_PERSONAL_CONTEXT_LIMIT), 6)),
-      '--max-chars', String(Math.min(Math.floor(AUTOREPLY_PERSONAL_CONTEXT_MAX_CHARS), 4000)),
-    ],
-    { cwd: process.cwd(), timeout: 60000, maxBuffer: 64 * 1024 },
-  )
-  return stdout.trim()
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      pythonBin(),
+      [
+        PERSONAL_CONTEXT_SCRIPT,
+        '--query', query.slice(0, 1200),
+        '--limit', String(Math.min(Math.floor(AUTOREPLY_PERSONAL_CONTEXT_LIMIT), 6)),
+        '--max-chars', String(Math.min(Math.floor(AUTOREPLY_PERSONAL_CONTEXT_MAX_CHARS), 4000)),
+      ],
+      { cwd: process.cwd(), timeout: 60000, maxBuffer: 64 * 1024 },
+    )
+    forwardScriptStderr('[autoreply/personal-context]', stderr)
+    return stdout.trim()
+  } catch (error) {
+    forwardScriptStderr('[autoreply/personal-context]', stderrOf(error))
+    throw error
+  }
 }

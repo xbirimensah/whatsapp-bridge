@@ -13,6 +13,8 @@ This repo includes a local autoreply service that sits beside `whatsapp-bridge`.
 - stores policy in `data/autoreply/policy.json`
 - logs drafts to `data/autoreply/drafts.ndjson`
 - logs audit events to `data/autoreply/audit.ndjson`
+- keeps opt-in escalation state in `data/autoreply/escalation.json`
+- keeps bounded operator feedback in `data/autoreply/feedback.json`
 
 ## Current status
 
@@ -31,6 +33,8 @@ Implemented and verified:
   - per-chat auto-send cooldown
   - duplicate inbound-message protection
   - group auto-send disabled by default
+  - trivial generated acknowledgements never become text sends
+  - lexical language compatibility is rechecked at the text-send boundary
 
 Still worth improving later:
 
@@ -224,6 +228,39 @@ This is the route `whatsapp-bridge` calls for inbound events. It now accepts bot
 - inspect:
   - `data/autoreply/audit.ndjson`
   - `data/autoreply/drafts.ndjson`
+
+## Draft-only chats
+
+`draft_only` in the policy is a list of JIDs that may get drafts but never an
+auto-send, even when the mode is `auto`. Use it for chats where a wrong promise
+in your name is costly. A policy `PUT` that omits the field keeps the existing
+list.
+
+## Escalation and operator feedback
+
+Escalation is disabled by default. When enabled, it only reuses the existing
+configured private notification channel; it never creates credentials or falls
+back to an unconfigured destination. Auto-send safety blocks still persist a
+normal draft first. Delivery attempts, failures, and rate-limit decisions are
+audited. Configure the local state explicitly (the values are bounded):
+
+```bash
+npx tsx -e "import('./src/autoreply-escalation.js').then(m => console.log(m.writeEscalationConfig({enabled:true,cooldown_ms:900000,max_per_hour:12})))"
+```
+
+If no notification transport is configured, escalation fails closed to the
+ordinary draft/review path. To enable Telegram delivery, configure an existing
+Telegram bot token and chat ID via the notification setup flow; this repository
+does not provision or store credentials outside `.env`.
+
+Operator corrections are review records only: they do not silently train a
+model or update policy. They are bounded to the most recent 500 records and
+their text is kept out of the audit log.
+
+```bash
+npm run autoreply:feedback -- add 15551234567@s.whatsapp.net "draft text" "operator correction" corrected "optional note"
+npm run autoreply:feedback -- list 25
+```
 
 ## LLM providers
 

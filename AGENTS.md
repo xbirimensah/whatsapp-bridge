@@ -115,18 +115,18 @@ The daemon (`npm run start` in another terminal, or a launchd / systemd unit) mu
 Same prerequisites: bearer token, daemon up.
 
 ```bash
-TOKEN=$(grep '^API_TOKEN=' .env | cut -d= -f2)
+WA_AUTH=$(grep '^API_TOKEN=' .env | cut -d= -f2)
 
 # list conversations
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H "Authorization: Bearer $WA_AUTH" \
   'http://127.0.0.1:8080/v1/conversations?session=main&limit=20'
 
 # read history (newest first)
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H "Authorization: Bearer $WA_AUTH" \
   'http://127.0.0.1:8080/v1/messages?session=main&jid=12025550100@s.whatsapp.net&limit=20'
 
 # send a text
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+curl -s -X POST -H "Authorization: Bearer $WA_AUTH" -H "Content-Type: application/json" \
   -d '{"session":"main","to":"12025550100","text":"hi"}' \
   http://127.0.0.1:8080/v1/send
 ```
@@ -236,8 +236,8 @@ Everything runs through `npm run` — `tsx` executes the TypeScript directly, so
 Handy while developing:
 
 ```bash
-TOKEN=$(grep '^API_TOKEN=' .env | cut -d= -f2)
-curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/health
+WA_AUTH=$(grep '^API_TOKEN=' .env | cut -d= -f2)
+curl -s -H "Authorization: Bearer $WA_AUTH" http://127.0.0.1:8080/v1/health
 sqlite3 data/wa.db          # the entire data model lives in this one file
 ```
 

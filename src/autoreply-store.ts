@@ -22,6 +22,9 @@ export interface AutoReplyPolicy {
   // mode/scope/time windows. Matched by normalized JID (phone or group id), so
   // a bare phone number matches its @s.whatsapp.net JID. Highest priority.
   blocklist: string[]
+  // Chats that may get drafts but never an auto-send, even when mode is 'auto'
+  // (e.g. work chats where a wrong promise in the operator's name is costly).
+  draft_only: string[]
   active_until: string | null
   active_hours: ActiveHours | null
   notes: string | null
@@ -165,6 +168,7 @@ const DEFAULT_POLICY: AutoReplyPolicy = {
   contacts: [],
   groups: [],
   blocklist: [],
+  draft_only: [],
   active_until: null,
   active_hours: null,
   notes: 'Default draft-only mode for all chats.',
@@ -214,6 +218,7 @@ export function readPolicy(): AutoReplyPolicy {
       contacts: Array.isArray(raw.contacts) ? raw.contacts : [],
       groups: Array.isArray(raw.groups) ? raw.groups : [],
       blocklist: Array.isArray(raw.blocklist) ? raw.blocklist : [],
+      draft_only: Array.isArray(raw.draft_only) ? raw.draft_only : [],
       active_hours: raw.active_hours ?? null,
       active_until: raw.active_until ?? null,
       notes: raw.notes ?? null,
@@ -231,6 +236,7 @@ export function writePolicy(next: Omit<AutoReplyPolicy, 'updated_at'>): AutoRepl
     contacts: Array.from(new Set(next.contacts.map((v) => v.trim()).filter(Boolean))),
     groups: Array.from(new Set(next.groups.map((v) => v.trim()).filter(Boolean))),
     blocklist: Array.from(new Set(next.blocklist.map((v) => v.trim()).filter(Boolean))),
+    draft_only: Array.from(new Set((next.draft_only ?? []).map((v) => v.trim()).filter(Boolean))),
     updated_at: new Date().toISOString(),
   }
   writeFileSync(POLICY_PATH, JSON.stringify(policy, null, 2))
@@ -355,6 +361,9 @@ export function evaluatePolicy(policy: AutoReplyPolicy, context: DecisionContext
   }
   if (!scopeAllows(policy, chatJids, context.is_group)) {
     return { active: false, mode: policy.mode, reason: 'chat is outside configured scope' }
+  }
+  if (policy.mode === 'auto' && listMatches(policy.draft_only ?? [], chatJids)) {
+    return { active: true, mode: 'draft', reason: 'chat is draft-only' }
   }
   return { active: true, mode: policy.mode, reason: 'policy active' }
 }

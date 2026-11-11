@@ -59,6 +59,7 @@ function toInput(policy: AutoReplyPolicy): Omit<AutoReplyPolicy, 'updated_at'> {
     contacts: policy.contacts,
     groups: policy.groups,
     blocklist: policy.blocklist,
+    draft_only: policy.draft_only,
     active_until: policy.active_until,
     active_hours: policy.active_hours,
     notes: policy.notes,

@@ -61,6 +61,16 @@ export const HOST = process.env.HOST ?? '127.0.0.1'
 export const WEBHOOK_URL = process.env.WEBHOOK_URL?.trim() || null
 export const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN?.trim() || null
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY?.trim() || null
+// Local transcription (mlx-whisper). When set, voice notes are transcribed on
+// this machine first; OpenAI is only the fallback.
+export const TRANSCRIBE_LOCAL_PYTHON = process.env.TRANSCRIBE_LOCAL_PYTHON?.trim() || null
+export const TRANSCRIBE_LOCAL_MODEL = process.env.TRANSCRIBE_LOCAL_MODEL?.trim() || null
+// The operator's own "message yourself" chat (comma-separated JIDs). Messages the
+// operator types there are forwarded to the webhook too, so agents can take orders.
+export const WA_SELF_CHAT_JIDS = new Set(
+  (process.env.WA_SELF_CHAT_JIDS ?? '').split(',').map((v) => v.trim().toLowerCase()).filter(Boolean),
+)
+export const TRANSCRIBE_ENABLED = Boolean(TRANSCRIBE_LOCAL_PYTHON || OPENAI_API_KEY)
 export const FORCE_HISTORY_SYNC_ON_RESTORE = /^(1|true|yes|on)$/i.test(
   process.env.WA_FORCE_HISTORY_SYNC_ON_RESTORE ?? '',
 )

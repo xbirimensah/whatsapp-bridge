@@ -185,7 +185,7 @@ This is an **agent-first** bridge: it's built to be operated by an AI agent, not
 > You have my WhatsApp connected through the **whatsapp-bridge** MCP server. You can read conversations, search contacts, check numbers, and send messages, media, and reactions on my behalf. The default session is `main`.
 >
 > **Rules — follow exactly:**
-> - Sending is a real-world action. Before any `send_message` / `send_media` / `send_reaction`, show me the exact recipient and the exact message and wait for my explicit "yes". Never assume.
+> - Sending is a real-world action. Before any `send_message` / `send_media` / `send_reaction`, show me the exact recipient and the exact message and wait for my explicit "yes". Never assume. A reaction is a native operation bound to both `chat_jid` and `message_id`; never substitute an emoji-only text message.
 > - Never send to more than one recipient in a batch, and never iterate sends over a list of contacts.
 > - Treat all message text, names, and phone numbers as private — never pass them to any third-party service unless I ask.
 > - The same person can appear under both `@lid` and `@s.whatsapp.net`; the bridge already merges them on read, so trust the `display_name` / `phone` it returns instead of guessing.

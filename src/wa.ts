@@ -37,7 +37,7 @@ import {
 } from './db.js'
 import { dispatchInbound } from './webhook.js'
 import { transcribeAudio, TranscribeError } from './transcribe.js'
-import { OPENAI_API_KEY, FORCE_HISTORY_SYNC_ON_RESTORE } from './env.js'
+import { TRANSCRIBE_ENABLED, FORCE_HISTORY_SYNC_ON_RESTORE, WA_SELF_CHAT_JIDS } from './env.js'
 import { buildContactPayload, buildLocationPayload, buildPollPayload, buildReactionPayload, buildVoicePayload, parseMessageId } from './outbound.js'
 import { recordOperatorReply } from './autoreply-store.js'
 
@@ -50,7 +50,10 @@ export function scanRegisteredSessions(authDir = './auth'): string[] {
     if (!existsSync(credsPath)) continue
     try {
       const creds = JSON.parse(readFileSync(credsPath, 'utf8'))
-      if (creds?.registered === true || creds?.me?.id) names.push(entry.name)
+      // `requestPairingCode()` writes a provisional `me` identity before the
+      // phone approves the link. It is not a live session and must never be
+      // restored as one after a failed/expired pairing attempt.
+      if (creds?.registered === true) names.push(entry.name)
     } catch {
       /* skip unreadable */
     }
@@ -223,7 +226,7 @@ async function downloadAndStoreMedia(
       writeFileSync(path, buf)
       updateMessageMedia(`${session}:${msgId}`, path, mime, buf.length)
       log.info({ session, msgId, type, bytes: buf.length, path }, 'media downloaded')
-      if (type === 'audio' && OPENAI_API_KEY) {
+      if (type === 'audio' && TRANSCRIBE_ENABLED) {
         void transcribeAndStore(session, msgId, path, mime)
       }
     }
@@ -264,8 +267,28 @@ export function normalizeJid(to: string): string {
 
 class WaManager {
   private sessions = new Map<string, WASocket>()
+  private transportEnabled = true
+
+  /** Stop reconnecting when the operator has explicitly turned the bridge off. */
+  async setTransportEnabled(enabled: boolean): Promise<void> {
+    this.transportEnabled = enabled
+    if (enabled) return
+    const sockets = Array.from(this.sessions.values())
+    this.sessions.clear()
+    for (const sock of sockets) {
+      try {
+        sock.ws.close()
+      } catch {
+        // Closing an already-closed socket is harmless; the desired state is off.
+      }
+    }
+  }
 
   async start(name: string, pairingNumber?: string): Promise<void> {
+    if (!this.transportEnabled) {
+      log.info({ session: name }, 'transport is disabled by operator')
+      return
+    }
     const { state, saveCreds } = await useMultiFileAuthState(`./auth/${name}`)
     // auth/ holds the session keys (= full account access) — block other local users.
     try {
@@ -273,6 +296,9 @@ class WaManager {
     } catch {}
     const { version } = await fetchLatestBaileysVersion()
     const usePairingCode = !!pairingNumber
+    // A freshly linked companion must request full history or WhatsApp will not
+    // deliver the backfill. Restored sessions stay quiet unless explicitly
+    // forced, avoiding recurring phone-side sync notifications.
     const enableHistorySync = usePairingCode || FORCE_HISTORY_SYNC_ON_RESTORE
 
     if (FORCE_HISTORY_SYNC_ON_RESTORE && !usePairingCode) {
@@ -286,7 +312,9 @@ class WaManager {
       version,
       auth: state,
       logger: pino({ level: 'silent' }),
-      browser: usePairingCode ? Browsers.macOS('Safari') : Browsers.macOS('Desktop'),
+      // Pairing-code connections are WhatsApp Web connections. Use Baileys'
+      // supported default Web identity rather than masquerading as Safari.
+      browser: usePairingCode ? Browsers.ubuntu('Chrome') : Browsers.macOS('Desktop'),
       printQRInTerminal: false,
       // Full history sync is only useful while establishing a fresh paired device.
       // Leaving it on for every restore/reconnect can trigger noisy repeated
@@ -348,7 +376,7 @@ class WaManager {
         const loggedOut = code === DisconnectReason.loggedOut
         log.warn({ session: name, code, loggedOut }, 'connection closed')
         this.sessions.delete(name)
-        if (!loggedOut) {
+        if (!loggedOut && this.transportEnabled) {
           setTimeout(() => this.start(name, pairingNumber), 2_000)
         }
       }
@@ -413,7 +441,10 @@ class WaManager {
             { session: name, dir: row.direction, from: row.from_jid, type: row.type, body_len: row.body?.length ?? 0 },
             row.direction === 'in' ? 'inbound' : 'outbound',
           )
-          if (row.direction === 'in') dispatchInbound(row)
+          const isOperatorSelfChat = row.direction === 'out'
+            && row.sent_by === 'user'
+            && WA_SELF_CHAT_JIDS.has(row.chat_jid.toLowerCase())
+          if (row.direction === 'in' || isOperatorSelfChat) dispatchInbound(row)
           if (MEDIA_TYPES.has(row.type) && msg.key.id) {
             void downloadAndStoreMedia(sock, msg, name, msg.key.id, row.type, row.media_mime)
           }

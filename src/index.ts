@@ -5,6 +5,7 @@ import { wa, scanRegisteredSessions } from './wa.js'
 import { startApi } from './api.js'
 import { HOST, TIMEZONE } from './env.js'
 import { startUpdateWatcher } from './updates.js'
+import { bridgeControl } from './bridge-control.js'
 
 const log = pino({ level: 'info' }).child({ mod: 'main' })
 
@@ -46,10 +47,7 @@ if (newSession && alreadyPaired.length > 0 && !alreadyPaired.includes(newSession
 const sessionsToRestore = alreadyPaired.filter((s) => s !== newSession?.name)
 
 if (sessionsToRestore.length === 0 && !newSession) {
-  log.error(
-    'no paired sessions found in ./auth — pair the first one with: npm run pair -- <name> <number>',
-  )
-  process.exit(1)
+  log.warn('no paired sessions found in ./auth — API remains online; pair with: npm run pair -- <name> <number>')
 }
 
 log.info(
@@ -70,23 +68,24 @@ if (newSession) {
   )
 }
 
-for (const name of sessionsToRestore) {
-  try {
-    await wa.start(name)
-  } catch (err) {
-    log.error({ session: name, err }, 'failed to restore session, skipping')
+async function applyBridgeControl(enabled: boolean): Promise<void> {
+  await wa.setTransportEnabled(enabled)
+  if (!enabled) {
+    log.info('WhatsApp transport disabled by operator')
+    return
   }
+  for (const name of sessionsToRestore) {
+    try {
+      await wa.start(name)
+    } catch (err) {
+      log.error({ session: name, err }, 'failed to restore session')
+    }
+  }
+  if (newSession) await wa.start(newSession.name, newSession.number)
 }
 
-if (newSession) {
-  try {
-    await wa.start(newSession.name, newSession.number)
-  } catch (err) {
-    log.error({ session: newSession.name, err }, 'failed to start pairing session')
-    process.exit(1)
-  }
-}
+await applyBridgeControl(bridgeControl.get().enabled)
 
 startUpdateWatcher()
 
-await startApi()
+await startApi({ onBridgeControlChange: applyBridgeControl })

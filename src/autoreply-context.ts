@@ -11,6 +11,8 @@ import {
   AUTOREPLY_STYLE_CORPUS_PATH,
 } from './autoreply-env.js'
 import { db, expandJidGroup } from './db.js'
+import { detectTextLanguage } from './autoreply-language.js'
+import { readOperatorReplies, recordOperatorReplies, type OperatorReplySignal } from './autoreply-store.js'
 
 type HistoryRow = {
   ts: number
@@ -30,6 +32,14 @@ const HISTORY_ROW_MAX_CHARS = 100
 const BRIDGE_MESSAGE_ID_MARKER = ':3EB0'
 const DEFAULT_STYLE_ANCHOR_LIMIT = 30
 const STYLE_ANCHOR_ROW_MAX_CHARS = 90
+
+type OperatorReplyRow = {
+  id: string
+  session: string
+  chat_jid: string
+  content: string
+  ts: number
+}
 
 export function resolveHistoryMessageLimit(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') return DEFAULT_HISTORY_MESSAGE_LIMIT
@@ -90,33 +100,50 @@ export function formatStyleAnchor(messages: string[]): string {
 }
 
 // Verbatim operator-typed messages from the same chat: the strongest possible
-// style signal. Bridge-sent messages are excluded (see marker above).
+// style signal. Bridge-sent messages are excluded using sent_by, with the
+// historical Baileys id marker retained for rows created before that column.
 export function fetchOperatorStyleAnchor(params: {
   chatJid?: string | null
   session?: string | null
   limit?: number
 }): string {
+  return formatStyleAnchor(fetchOperatorReplySignals(params).map((reply) => reply.body))
+}
+
+export function fetchOperatorReplySignals(params: {
+  chatJid?: string | null
+  session?: string | null
+  limit?: number
+}): OperatorReplySignal[] {
   const session = params.session?.trim() || AUTOREPLY_DEFAULT_SESSION
   const limit = params.limit ?? DEFAULT_STYLE_ANCHOR_LIMIT
-  if (!params.chatJid || limit <= 0) return ''
+  if (!params.chatJid || limit <= 0) return []
 
   try {
     const jids = expandJidGroup(session, params.chatJid)
     const placeholders = jids.map(() => '?').join(',')
     const rows = db.prepare(`
-      SELECT COALESCE(body, transcript) AS content
+      SELECT id, session, chat_jid, COALESCE(body, transcript) AS content, ts
       FROM messages
       WHERE session = ? AND chat_jid IN (${placeholders})
         AND direction = 'out'
-        AND id NOT LIKE '%${BRIDGE_MESSAGE_ID_MARKER}%'
+        AND (sent_by = 'user' OR (sent_by IS NULL AND id NOT LIKE '%${BRIDGE_MESSAGE_ID_MARKER}%'))
         AND COALESCE(body, transcript) IS NOT NULL
         AND TRIM(COALESCE(body, transcript)) != ''
       ORDER BY ts DESC
       LIMIT ?
-    `).all(session, ...jids, limit) as Array<{ content: string }>
-    return formatStyleAnchor(rows.reverse().map((row) => row.content))
+    `).all(session, ...jids, limit) as OperatorReplyRow[]
+    recordOperatorReplies(rows.map((row) => ({
+      message_id: row.id,
+      session: row.session,
+      chat_jid: row.chat_jid,
+      body: row.content,
+      language: detectTextLanguage(row.content),
+      ts: row.ts,
+    })))
+    return readOperatorReplies({ session, chatJids: jids, limit })
   } catch {
-    return ''
+    return readOperatorReplies({ session, chatJids: [params.chatJid], limit })
   }
 }
 

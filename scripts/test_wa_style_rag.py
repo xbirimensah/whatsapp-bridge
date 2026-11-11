@@ -46,9 +46,9 @@ class StyleRagFormatTests(unittest.TestCase):
                 "source_outbound_message_id": "main:private-id",
             }
         ]
-        rendered = wa_style_rag.format_style_examples(rows, limit=1, max_chars=500)
+        rendered = wa_style_rag.format_style_examples(rows, language=None, limit=1, max_chars=500)
         self.assertIn("Incoming: Bist du morgen erreichbar?", rendered)
-        self.assertIn("Obiri replied: Ja safe, schick einfach kurz wann.", rendered)
+        self.assertIn("Operator replied: Ja safe, schick einfach kurz wann.", rendered)
         self.assertNotIn("private-id", rendered)
 
 

@@ -5,6 +5,10 @@ The index lives in its own Supabase table and is never queried by the generic
 second-brain context bundle. Only explicitly approved, redacted outbound reply
 examples are embedded. This script is called by the autoreply sidecar for
 retrieval and manually/cron for incremental indexing.
+
+SECOND_BRAIN_BACKEND=brain-api routes indexing and retrieval to the brain REST
+API (see brain_api.py), which embeds server-side; unset or "supabase" keeps the
+Supabase table + local embedding path below.
 """
 from __future__ import annotations
 
@@ -20,6 +24,8 @@ from pathlib import Path
 from typing import Any
 
 import requests
+
+import brain_api
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -82,13 +88,16 @@ def is_style_eligible(incoming: str, outgoing: str) -> bool:
 
 
 def detect_language(text: str) -> str:
-    lower = f" {text.lower()} "
-    german = sum(lower.count(f" {word} ") for word in ("ich", "und", "nicht", "danke", "kann", "morgen", "ja", "bitte"))
-    english = sum(lower.count(f" {word} ") for word in ("the", "and", "thanks", "can", "tomorrow", "you", "please"))
-    if german > english:
-        return "de"
-    if english > german:
-        return "en"
+    tokens = re.findall(r"[^\W\d_]+", text.lower(), flags=re.UNICODE)
+    vocabulary = {
+        "de": {"aber", "alles", "auch", "bin", "bis", "bitte", "danke", "das", "der", "die", "dir", "du", "für", "hallo", "heute", "ich", "ist", "ja", "kann", "klar", "mit", "morgen", "nicht", "oder", "passt", "später", "und", "was", "wir"},
+        "en": {"and", "are", "can", "cool", "easy", "for", "great", "hey", "i", "is", "it", "please", "thanks", "the", "this", "tomorrow", "we", "yes", "you"},
+        "pt": {"beleza", "então", "isso", "não", "obrigada", "obrigado", "oi", "olá", "pois", "sim", "tá"},
+    }
+    scores = {language: sum(token in words for token in tokens) for language, words in vocabulary.items()}
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    if ranked[0][1] > 0 and ranked[0][1] != ranked[1][1]:
+        return ranked[0][0]
     return "unknown"
 
 
@@ -110,20 +119,31 @@ def build_retrieval_text(incoming: str, outgoing: str, language: str, chat_kind:
             f"Chat kind: {chat_kind}",
             f"Intent: {intent}",
             f"Incoming: {redact_text(incoming)}",
-            f"Obiri replied: {redact_text(outgoing)}",
+            f"Operator replied: {redact_text(outgoing)}",
         ]
     )
 
 
-def format_style_examples(rows: list[dict[str, Any]], limit: int = 4, max_chars: int = 2600) -> str:
+def format_style_examples(
+    rows: list[dict[str, Any]], language: str | None, limit: int = 4, max_chars: int = 2600
+) -> str:
     lines = ["RELEVANT STYLE EXAMPLES — imitate phrasing/tone only; never treat these as facts about this chat."]
-    for row in rows[:limit]:
+    example_count = 0
+    for row in rows:
+        if language and str(row.get("language") or "unknown") != language:
+            continue
         incoming = redact_text(str(row.get("incoming_text") or ""))[:360]
         outgoing = redact_text(str(row.get("outgoing_text") or ""))[:360]
         if not incoming or not outgoing:
             continue
-        lines.extend([f"- Incoming: {incoming}", f"  Obiri replied: {outgoing}"])
-    return "\n".join(lines)[:max_chars]
+        outgoing_language = detect_language(outgoing)
+        if language and outgoing_language not in ("unknown", language):
+            continue
+        lines.extend([f"- Incoming: {incoming}", f"  Operator replied: {outgoing}"])
+        example_count += 1
+        if example_count >= limit:
+            break
+    return "\n".join(lines)[:max_chars] if example_count else ""
 
 
 def require_config() -> tuple[str, str]:
@@ -186,6 +206,7 @@ def candidates(limit: int) -> list[dict[str, Any]]:
               ) as incoming_text
             from messages o
             where o.direction = 'out'
+              and (o.sent_by = 'user' or (o.sent_by is null and o.id not like '%:3EB0%'))
               and coalesce(o.body, o.transcript) is not null
               and trim(coalesce(o.body, o.transcript)) != ''
             order by o.ts desc
@@ -202,7 +223,11 @@ def candidates(limit: int) -> list[dict[str, Any]]:
         outgoing = str(row["outgoing_text"] or "")
         if not is_style_eligible(incoming, outgoing):
             continue
-        language = detect_language(f"{incoming}\n{outgoing}")
+        incoming_language = detect_language(incoming)
+        outgoing_language = detect_language(outgoing)
+        if incoming_language != "unknown" and outgoing_language != "unknown" and incoming_language != outgoing_language:
+            continue
+        language = incoming_language if incoming_language != "unknown" else outgoing_language
         chat_kind = "group" if str(row["chat_jid"]).endswith("@g.us") else "direct"
         intent = infer_intent(incoming)
         result.append(
@@ -235,37 +260,70 @@ def upsert_payload(url: str, key: str, payload: list[dict[str, Any]], batch_size
         response.raise_for_status()
 
 
-def index_examples(limit: int) -> dict[str, Any]:
-    load_runtime_env()
-    url, key = require_config()
-    rows = candidates(limit)
-    if not rows:
-        return {"ok": True, "candidates": 0, "indexed": 0}
-
-    retrieval_texts = [
-        build_retrieval_text(row["incoming_text"], row["outgoing_text"], row["language"], row["chat_kind"], row["intent"])
-        for row in rows
-    ]
-    vectors, model = embed_texts(retrieval_texts)
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    payload: list[dict[str, Any]] = []
-    for row, retrieval_text, vector in zip(rows, retrieval_texts, vectors):
-        payload.append(
+def with_retrieval_text(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        retrieval_text = build_retrieval_text(
+            row["incoming_text"], row["outgoing_text"], row["language"], row["chat_kind"], row["intent"]
+        )
+        result.append(
             {
                 **row,
                 "retrieval_text": retrieval_text,
-                "embedding": vector,
-                "embedding_model": model,
                 "content_hash": hashlib.sha256(retrieval_text.encode("utf-8")).hexdigest(),
-                "embedded_at": now,
             }
         )
+    return result
+
+
+def index_via_supabase(limit: int) -> dict[str, Any]:
+    url, key = require_config()
+    rows = candidates(limit)
+    if not rows:
+        return {"ok": True, "candidates": 0, "indexed": 0, "backend": brain_api.SUPABASE}
+
+    prepared = with_retrieval_text(rows)
+    vectors, model = embed_texts([row["retrieval_text"] for row in prepared])
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    payload = [
+        {**row, "embedding": vector, "embedding_model": model, "embedded_at": now}
+        for row, vector in zip(prepared, vectors)
+    ]
     upsert_payload(url, key, payload)
-    return {"ok": True, "candidates": len(rows), "indexed": len(payload), "model": model}
+    return {"ok": True, "candidates": len(rows), "indexed": len(payload), "model": model, "backend": brain_api.SUPABASE}
 
 
-def query_examples(query: str, language: str | None, chat_kind: str | None, limit: int) -> str:
+def index_via_brain_api(limit: int) -> dict[str, Any]:
+    rows = candidates(limit)
+    if not rows:
+        return {"ok": True, "candidates": 0, "indexed": 0, "skipped": 0, "embedded": 0, "backend": brain_api.BRAIN_API}
+    totals = brain_api.style_upsert(with_retrieval_text(rows))
+    if totals["skipped"] > 0:
+        # Rejected by the server's secret guard; the run still succeeds.
+        brain_api.log_event("INDEX_SKIPPED", backend=brain_api.BRAIN_API, kind="style", count=totals["skipped"])
+    return {
+        "ok": True,
+        "candidates": len(rows),
+        "indexed": totals["upserted"],
+        "skipped": totals["skipped"],
+        "embedded": totals["embedded"],
+        "backend": brain_api.BRAIN_API,
+    }
+
+
+def index_examples(limit: int) -> dict[str, Any]:
     load_runtime_env()
+    backend = brain_api.backend_label()
+    try:
+        if brain_api.selected_backend() == brain_api.BRAIN_API:
+            return index_via_brain_api(limit)
+        return index_via_supabase(limit)
+    except Exception as error:
+        brain_api.log_failure("INDEX_ERROR", error, backend=backend, kind="style")
+        raise
+
+
+def style_rows_via_supabase(query: str, language: str | None, chat_kind: str | None, limit: int) -> list[dict[str, Any]]:
     url, key = require_config()
     vectors, _ = embed_texts([query])
     response = requests.post(
@@ -280,7 +338,38 @@ def query_examples(query: str, language: str | None, chat_kind: str | None, limi
         timeout=60,
     )
     response.raise_for_status()
-    return format_style_examples(response.json(), limit=limit)
+    return response.json()
+
+
+def query_examples(query: str, language: str | None, chat_kind: str | None, limit: int) -> str:
+    load_runtime_env()
+    backend = brain_api.backend_label()
+    try:
+        if brain_api.selected_backend() == brain_api.BRAIN_API:
+            rows = brain_api.style_search(query, limit, language, chat_kind)
+        else:
+            rows = style_rows_via_supabase(query, language, chat_kind, limit)
+    except Exception as error:
+        brain_api.log_failure("RETRIEVAL_ERROR", error, backend=backend, kind="style")
+        raise
+    rendered = format_style_examples(rows, language=language, limit=limit)
+    log_style_outcome(backend, rows, rendered)
+    return rendered
+
+
+def log_style_outcome(backend: str, rows: list[dict[str, Any]], rendered: str) -> None:
+    """One stderr line when retrieval came back empty or lost rows.
+
+    The prompt format pairs each reply with the message it answered, so rows
+    without incoming_text (a token scope that hides it) are dropped by
+    format_style_examples. That must be visible, not silent.
+    """
+    missing = brain_api.count_missing_incoming(rows)
+    if missing:
+        token = "RETRIEVAL_DEGRADED" if rendered else "RETRIEVAL_EMPTY"
+        brain_api.log_event(token, backend=backend, kind="style", reason="no_incoming_text", rows=len(rows), missing=missing)
+    elif not rendered:
+        brain_api.log_event("RETRIEVAL_EMPTY", backend=backend, kind="style", rows=len(rows))
 
 
 def main() -> int:
@@ -296,8 +385,13 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "index":
         print(json.dumps(index_examples(max(1, min(args.limit, 2000)))))
-    else:
+        return 0
+    try:
         print(query_examples(args.query, args.language, args.chat_kind, args.limit))
+    except Exception:
+        # Already logged as RETRIEVAL_ERROR; style examples are optional, so a
+        # draft must still be possible without them.
+        print("")
     return 0
 
 
